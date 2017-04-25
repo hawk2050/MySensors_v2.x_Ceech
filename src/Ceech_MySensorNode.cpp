@@ -47,7 +47,7 @@ https://forum.mysensors.org/topic/4276/converting-a-sketch-from-1-5-x-to-2-0-x/2
  #define MY_RADIO_NRF24
  //#define MY_RADIO_RFM69
 
- #define MY_NODE_ID 20
+ #define MY_NODE_ID 10
  /*Makes this static so won't try and find another parent if communication with
  gateway fails*/
  #define MY_PARENT_NODE_ID 0
@@ -58,16 +58,16 @@ https://forum.mysensors.org/topic/4276/converting-a-sketch-from-1-5-x-to-2-0-x/2
   * creating an instance of the Mysensors class. Other defaults will include
   * transmitting on channel 76 with a data rate of 250kbps.
   */
- #define MY_RF24_CE_PIN 9
- #define MY_RF24_CS_PIN 10
- #define MY_RF24_CHANNEL 100
+// DHT Data wire is plugged into port 2 on the Arduino
+#define HUMIDITY_SENSOR_DIGITAL_PIN 2
+#define ONE_WIRE_BUS 5
+
+#define MY_RF24_CE_PIN 7
+#define MY_RF24_CS_PIN 8
+#define MY_RF24_CHANNEL 76
 
 #include <Arduino.h>
 #include <MySensors.h>
-#include <Wire.h>
-#include "SparkFunHTU21D.h"
-//#include <stdint.h>
-//#include <math.h>
 
 // FORCE_TRANSMIT_INTERVAL, this number of times of wakeup, the sensor is forced to report all values to
 // the controller
@@ -75,32 +75,55 @@ https://forum.mysensors.org/topic/4276/converting-a-sketch-from-1-5-x-to-2-0-x/2
 //#define SLEEP_TIME 300000
 #define SLEEP_TIME 5000
 
-#define CHILD_ID_HUMIDITY 0
-#define CHILD_ID_TEMP 1
+#define CHILD_ID_DHT22_HUMIDITY 0
+#define CHILD_ID_DHT22_TEMP 1
 #define CHILD_ID_VOLTAGE 2
 
-/*****************************/
-/********* FUNCTIONS *********/
-/*****************************/
+#define CHILD_ID_BMP180_PRESSURE 3
+#define CHILD_ID_BMP180_TEMP 4
 
-//Create an instance of the object
-HTU21D myHumidity;
-MyMessage msgHum(CHILD_ID_HUMIDITY, V_HUM);
-MyMessage msgTemp(CHILD_ID_TEMP, V_TEMP);
+#define CHILD_ID_DALLAS_TEMP_BASE 5
 
-uint16_t measureBattery(bool force);
-MyMessage msgVolt(CHILD_ID_VOLTAGE, V_VOLTAGE);
+#define MAX_ATTACHED_DS18B20 2
+/**************************************************/
+/********* Sensor Messages and FUNCTIONS *********/
+/*************************************************/
 
-uint16_t readVcc();
-void switchClock(unsigned char clk);
-/*Set true to have clock throttle back, or false to not throttle*/
-bool highfreq = true;
+#include <SFE_BMP180.h>
+#include <Wire.h>
+SFE_BMP180 pressure;
+MyMessage msgBmp180Press(CHILD_ID_BMP180_PRESSURE, V_PRESSURE);
+MyMessage msgBmp180Temp(CHILD_ID_BMP180_TEMP, V_TEMP);
+void readBMP180TempAndPressure(bool force);
+
+#include <OneWire.h>
+#include <DallasTemperature.h>
+float lastTemperature[2];
+int numSensors=0;
+// Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
+OneWire oneWire(ONE_WIRE_BUS);
+// Pass our oneWire reference to Dallas Temperature.
+DallasTemperature dallas_sensor(&oneWire);
+// Initialize temperature message
+MyMessage msgDallas(CHILD_ID_DALLAS_TEMP_BASE, V_TEMP);
+void readDS18B20(bool force);
+
+
+#include "DHT22.h"
+DHT22 dht(HUMIDITY_SENSOR_DIGITAL_PIN);
+MyMessage msgHum(CHILD_ID_DHT22_HUMIDITY, V_HUM);
+MyMessage msgTemp(CHILD_ID_DHT22_TEMP, V_TEMP);
+void readDHTHumidityAndTemperature(bool force);
+
+
+/**************************************************/
+/************ Utility Functions *******************/
+/**************************************************/
+
 
 boolean receivedConfig = false;
 boolean metric = true;
 uint8_t loopCount = 0;
-uint8_t clockSwitchCount = 0;
-
 
 
 /**********************************/
@@ -130,18 +153,43 @@ initialised.*/
 void setup()
 {
   analogReference(INTERNAL);
-  myHumidity.begin();
+  dallas_sensor.begin();
+  Serial.print("Locating devices...");
+  Serial.print("Found ");
+  numSensors = dallas_sensor.getDeviceCount();
+  Serial.print(numSensors, DEC);
+  Serial.println(" devices.");
+  //dht.setup(HUMIDITY_SENSOR_DIGITAL_PIN);
+  //myHumidity.begin();
+
+  if (pressure.begin())
+  {
+    Serial.println("BMP180 init success");
+  }
+  else
+  {
+    // Oops, something went wrong, this is usually a connection problem,
+    // see the comments at the top of this sketch for the proper connections.
+
+    Serial.println("BMP180 init fail\n\n");
+    while(1); // Pause forever.
+  }
 
 }
 
 void presentation()
 {
    // Send the sketch version information to the gateway and Controller
-   sendSketchInfo("mys_v11-temp-hum", "0.5");
+   // Send the sketch version information to the gateway and Controller
+  sendSketchInfo("ceech-temp-hum-pressure", "0.5");
    // Register all sensors to gateway (they will be created as child devices)
-   present(CHILD_ID_VOLTAGE, S_MULTIMETER);
-   present(CHILD_ID_HUMIDITY, S_HUM);
-   present(CHILD_ID_TEMP, S_TEMP);
+   // Present all sensors to controller
+  present(CHILD_ID_DHT22_HUMIDITY, S_HUM);
+  present(CHILD_ID_BMP180_PRESSURE, S_BARO);
+  present(CHILD_ID_BMP180_TEMP, S_TEMP);
+  present(CHILD_ID_DALLAS_TEMP_BASE, S_TEMP);
+
+
 }
 
 
@@ -152,15 +200,7 @@ void loop()
 
   loopCount++;
   forceTransmit = false;
-  clockSwitchCount++;
 
-  // When we wake up the 5th time after power on, switch to 4Mhz clock
-  // This allows us to print debug messages on startup (as serial port is dependend on oscilator settings).
-  // Switch to 4Mhz for the reminder of the sketch, save power and allow operation down to 1.8V
-  if ( (clockSwitchCount == 5) && highfreq)
-  {
-    switchClock(1<<CLKPS0); //should divide by 2 giving 4MHz operation
-  }
 
   if (loopCount > FORCE_TRANSMIT_INTERVAL)
   { // force a transmission
@@ -168,171 +208,149 @@ void loop()
     loopCount = 0;
   }
 
-  measureBattery(forceTransmit);
+  readDS18B20(forceTransmit);
+  wait(1000);
 
-  readHTU21DTemperature(forceTransmit);
-  readHTU21DHumidity(forceTransmit);
+  readDHTHumidityAndTemperature(forceTransmit);
+  wait(1000);
 
-  sleep(SLEEP_TIME);
+  readBMP180TempAndPressure(forceTransmit);
+
+  wait(SLEEP_TIME);
 
 
+}//loop()
+
+
+#define P_LIMIT_HI 1050.0
+#define P_LIMIT_LO 900.0
+void readBMP180TempAndPressure(bool force)
+{
+  char status;
+  double T,P;
+  static double lastP = 1000.0;
+
+  // You must first get a temperature measurement to perform a pressure reading.
+
+  // Start a temperature measurement:
+  // If request is successful, the number of ms to wait is returned.
+  // If request is unsuccessful, 0 is returned.
+
+  status = pressure.startTemperature();
+  if (status != 0)
+  {
+    // Wait for the measurement to complete:
+    wait(status);
+
+    // Retrieve the completed temperature measurement:
+    // Note that the measurement is stored in the variable T.
+    // Function returns 1 if successful, 0 if failure.
+
+    status = pressure.getTemperature(T);
+    if (status != 0)
+    {
+      // Start a pressure measurement:
+      // The parameter is the oversampling setting, from 0 to 3, higher numbers are slower, higher-res outputs..
+      // If request is successful, the number of ms to wait is returned.
+      // If request is unsuccessful, 0 is returned.
+
+      status = pressure.startPressure(3);
+      if (status != 0)
+      {
+        // Wait for the measurement to complete:
+        wait(status);
+
+        // Retrieve the completed pressure measurement:
+        // Note that the measurement is stored in the variable P.
+        // Note also that the function requires the previous temperature measurement (T).
+        // (If temperature is stable, you can do one temperature measurement for a number of pressure measurements.)
+        // Function returns 1 if successful, 0 if failure.
+
+        status = pressure.getPressure(P,T);
+
+        /*Filter value to get rid of the occasional erroneous large value*/
+        if(P > P_LIMIT_HI || P < P_LIMIT_LO)
+        {
+          P = lastP;
+        }
+
+       lastP = P;
+
+        if (status != 0)
+        {
+          send(msgBmp180Temp.set(T,1));
+          send(msgBmp180Press.set(P,1));
+          #if DEBUG_RCC
+          Serial.print("BMP180 Temperature:");
+          Serial.print(T, 1);
+          Serial.print("C");
+          Serial.println();
+          Serial.print("BMP180 Pressure:");
+          Serial.print(P, 1);
+          Serial.print("mb");
+          Serial.println();
+          #endif
+
+        }
+      }
+    }
+  }
 }
 
-void readHTU21DTemperature(bool force)
+void readDHTHumidityAndTemperature(bool force)
 {
   static float lastTemp = 0;
-
-  if (force)
-  {
-   lastTemp = -100;
-  }
-  float temp = myHumidity.readTemperature();
-
-  if(lastTemp != temp)
-  {
-    send(msgTemp.set(temp,1));
-    lastTemp = temp;
-    #ifdef DEBUG_RCC
-    Serial.print(" Temperature:");
-    Serial.print(temp, 1);
-    Serial.print("C");
-    Serial.println();
-    #endif
-  }
-}
-
-void readHTU21DHumidity(bool force)
-{
   static float lastHumidity = 0;
+  DHT22_ERROR_t errorCode;
 
   if (force)
   {
-    lastHumidity = -100;
+    lastTemp = -100.0;
+    lastHumidity = -100.0;
   }
-  float humd = myHumidity.readHumidity();
 
-  if(lastHumidity != humd)
+  errorCode = dht.readData();
+  float humidity = dht.getHumidity();
+  float temperature = dht.getTemperatureC();
+
+  if(!isnan(humidity))
   {
-    send(msgHum.set(humd,1));
-    lastHumidity = humd;
-    #ifdef DEBUG_RCC
-    Serial.print(" Humidity:");
-    Serial.print(humd, 1);
-    Serial.print("%");
-    Serial.println();
-    #endif
+    if(lastHumidity != humidity)
+    {
+      send(msgHum.set(humidity,1));
+      lastHumidity = humidity;
+    }
   }
+
 }
 
 
-#ifdef SI7021_ENABLE
-void readSI7021TempHumidity(bool force)
+void readDS18B20(bool force)
 {
-  static float lastTemp = 0;
-  static float lastHum = 0;
-
   if (force)
   {
-   lastTemp = -100;
-   lastHum = 0;
+    for (int i=0; i<numSensors && i<MAX_ATTACHED_DS18B20; i++)
+    {
+      lastTemperature[i] = -100.0;
+    }
   }
+  // Fetch temperatures from Dallas sensors
+  dallas_sensor.requestTemperatures();
 
-  si7021_env data = myHumidity.getHumidityAndTemperature();
-  float temp = 1.0*data.celsiusHundredths/100;
-  int humd = data.humidityPercent;
-
-  if(lastTemp != temp)
+  // Read temperatures and send them to controller
+  for (int i=0; i<numSensors && i<MAX_ATTACHED_DS18B20; i++)
   {
-    send(msgTemp.set(temp,1));
-    lastTemp = temp;
-    #ifdef DEBUG_RCC
-    Serial.print(" Temperature:");
-    Serial.print(temp, 1);
-    Serial.print("C");
-    Serial.println();
-    #endif
+
+    // Fetch and round temperature to one decimal
+    float temperature = static_cast<float>(static_cast<int>((getControllerConfig().isMetric ? dallas_sensor.getTempCByIndex(i) : dallas_sensor.getTempFByIndex(i)) * 10.)) / 10.;
+
+    // Only send data if temperature has changed and no error
+    if (lastTemperature[i] != temperature && temperature != -127.00)
+    {
+
+      // Send in the new temperature
+      send(msgDallas.setSensor(i).set(temperature,1));
+      lastTemperature[i]=temperature;
+    }
   }
-
-  if(lastHum != humd)
-  {
-    send(msgHum.set(humd,1));
-    lastHum = humd;
-    #ifdef DEBUG_RCC
-    Serial.print(" Humidity:");
-    Serial.print(humd, 1);
-    Serial.print("%");
-    Serial.println();
-    #endif
-  }
-}
-
-#endif
-
-
-uint16_t measureBattery(bool force)
-{
-  static uint16_t lastVcc = 0;
-
-  if (force)
-  {
-    lastVcc = 0;
-  }
-
-  uint16_t thisVcc = readVcc();
-  if(thisVcc != lastVcc)
-  {
-    send(msgVolt.set(thisVcc, 1));
-    lastVcc = thisVcc;
-    #if DEBUG_RCC
-    Serial.print("Battery voltage = ");
-    Serial.println(thisVcc);
-    Serial.println('\r');
-    #endif
-  }
-  return thisVcc;
-
-}
-/**
-* Measure remaining voltage in battery in millivolts
-*
-* From http://www.seeedstudio.com/wiki/DevDuino_Sensor_Node_V2.0_(ATmega_328)#Measurement_voltage_power
-*/
-
-uint16_t readVcc()
-{
-  // Read 1.1V reference against AVcc
-  // set the reference to Vcc and the measurement to the internal 1.1V reference
-  #if defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
-  ADMUX = _BV(REFS0) | _BV(MUX4) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
-  #elif defined (__AVR_ATtiny24__) || defined(__AVR_ATtiny44__) || defined(__AVR_ATtiny84__)
-  ADMUX = _BV(MUX5) | _BV(MUX0);
-  #elif defined (__AVR_ATtiny25__) || defined(__AVR_ATtiny45__) || defined(__AVR_ATtiny85__)
-  ADMUX = _BV(MUX3) | _BV(MUX2);
-  #else
-  ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
-  #endif
-  delay(75); // Wait for Vref to settle
-  ADCSRA |= _BV(ADSC); // Start conversion
-  while (bit_is_set(ADCSRA,ADSC)); // measuring
-  uint8_t low = ADCL; // must read ADCL first - it then locks ADCH
-  uint8_t high = ADCH; // unlocks both
-  long result = (high<<8) | low;
-  result = 1125300L / result; // Calculate Vcc (in mV); 1125300 = 1.1*1023*1000
-  #if DEBUG_RCC
-  Serial.print("Read Vcc = ");
-  Serial.println(result);
-  Serial.println('\r');
-  #endif
-  return (uint16_t)result; // Vcc in millivolts
-
-}
-
-void switchClock(unsigned char clk)
-{
-  cli();
-
-  CLKPR = 1<<CLKPCE; // Set CLKPCE to enable clk switching
-  CLKPR = clk;
-  sei();
-  highfreq = false;
 }
