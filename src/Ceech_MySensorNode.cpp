@@ -157,10 +157,11 @@ void setup()
   Serial.print("Locating devices...");
   Serial.print("Found ");
   numSensors = dallas_sensor.getDeviceCount();
+
+  #ifdef DEBUG_RCC
   Serial.print(numSensors, DEC);
   Serial.println(" devices.");
-  //dht.setup(HUMIDITY_SENSOR_DIGITAL_PIN);
-  //myHumidity.begin();
+  #endif
 
   if (pressure.begin())
   {
@@ -299,19 +300,38 @@ void readBMP180TempAndPressure(bool force)
 
 void readDHTHumidityAndTemperature(bool force)
 {
-  static float lastTemp = 0;
+  //static float lastTemp = 0;
   static float lastHumidity = 0;
   DHT22_ERROR_t errorCode;
+  float humidity;
 
   if (force)
   {
-    lastTemp = -100.0;
+    //lastTemp = -100.0;
     lastHumidity = -100.0;
   }
 
   errorCode = dht.readData();
-  float humidity = dht.getHumidity();
-  float temperature = dht.getTemperatureC();
+  if (errorCode == DHT_ERROR_NONE)
+  {
+    humidity = dht.getHumidity();
+    #ifdef DEBUG_RCC
+    Serial.print("Got DHT22 Data ");
+    Serial.print(dht.getTemperatureC());
+    Serial.print("C ");
+    Serial.print(humidity,1);
+    Serial.println("%");
+    #endif
+  }
+  else
+  {
+    humidity = lastHumidity;
+    #ifdef DEBUG_RCC
+    Serial.println("DHT read error ");
+    #endif
+  }
+
+  //float temperature = dht.getTemperatureC();
 
   if(!isnan(humidity))
   {
