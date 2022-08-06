@@ -41,7 +41,7 @@ https://forum.mysensors.org/topic/4276/converting-a-sketch-from-1-5-x-to-2-0-x/2
 
  // Enable debug prints to serial monitor
  //#define MY_DEBUG
- #define DEBUG_RCC 1
+ #define DEBUG_RCC 0
 
  // Enable and select radio type attached
  #define MY_RADIO_RF24
@@ -105,13 +105,13 @@ DallasTemperature dallas_sensor(&oneWire);
 MyMessage msgDallas(CHILD_ID_DALLAS_TEMP_BASE, V_TEMP);
 void readDS18B20(void);
 
-
+#if 0
 #include "DHT22.h"
 DHT22 dht(HUMIDITY_SENSOR_DIGITAL_PIN);
 MyMessage msgDhtHum(CHILD_ID_DHT22_HUMIDITY, V_HUM);
 MyMessage msgDhtTemp(CHILD_ID_DHT22_TEMP, V_TEMP);
 void readDHTHumidityAndTemperature(void);
-
+#endif
 
 /**************************************************/
 /************ Utility Functions *******************/
@@ -183,8 +183,10 @@ void presentation()
   sendSketchInfo("ceech-temp-hum-pressure", "0.6");
    // Register all sensors to gateway (they will be created as child devices)
    // Present all sensors to controller
+   #if 0
   present(CHILD_ID_DHT22_HUMIDITY, S_HUM,"DHT Rel Hum %");
   present(CHILD_ID_DHT22_TEMP, S_TEMP, "DHT Temperature");
+  #endif
   present(CHILD_ID_BMP180_PRESSURE, S_BARO,"BMP180 Pressure, hPa");
   present(CHILD_ID_BMP180_TEMP, S_TEMP,"BMP180 Temperature");
   present(CHILD_ID_DALLAS_TEMP_BASE, S_TEMP,"Freezer Temperature");
@@ -197,14 +199,16 @@ void loop()
 {
 
   readDS18B20();
-  wait(1000);
+  //wait(1000);
 
+#if 0
   readDHTHumidityAndTemperature();
   wait(1000);
-
+#endif
   readBMP180TempAndPressure();
+  
 
-  wait(SLEEP_TIME);
+  sleep(SLEEP_TIME);
 
 
 }//loop()
@@ -285,6 +289,7 @@ void readBMP180TempAndPressure()
   }
 }
 
+#if 0
 void readDHTHumidityAndTemperature()
 {
 
@@ -324,7 +329,7 @@ void readDHTHumidityAndTemperature()
   }
 
 }
-
+#endif
 
 void readDS18B20()
 {
@@ -342,7 +347,7 @@ void readDS18B20()
       // Send in the new temperature
     send(msgDallas.setSensor(i).set(temperature,1));
 
-    #ifdef DEBUG_RCC
+    #if DEBUG_RCC
     Serial.print("Got DS18B20 Data ");
     Serial.print(temperature);
     Serial.print("degC ");
