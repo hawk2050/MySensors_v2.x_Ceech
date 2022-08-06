@@ -40,11 +40,11 @@ https://forum.mysensors.org/topic/4276/converting-a-sketch-from-1-5-x-to-2-0-x/2
  */
 
  // Enable debug prints to serial monitor
- #define MY_DEBUG
+ //#define MY_DEBUG
  #define DEBUG_RCC 1
 
  // Enable and select radio type attached
- #define MY_RADIO_NRF24
+ #define MY_RADIO_RF24
  //#define MY_RADIO_RFM69
 
  #define MY_NODE_ID 10
@@ -69,9 +69,6 @@ https://forum.mysensors.org/topic/4276/converting-a-sketch-from-1-5-x-to-2-0-x/2
 #include <Arduino.h>
 #include <MySensors.h>
 
-// FORCE_TRANSMIT_INTERVAL, this number of times of wakeup, the sensor is forced to report all values to
-// the controller
-#define FORCE_TRANSMIT_INTERVAL 3
 //#define SLEEP_TIME 300000
 #define SLEEP_TIME 5000
 
@@ -94,7 +91,7 @@ https://forum.mysensors.org/topic/4276/converting-a-sketch-from-1-5-x-to-2-0-x/2
 SFE_BMP180 pressure;
 MyMessage msgBmp180Press(CHILD_ID_BMP180_PRESSURE, V_PRESSURE);
 MyMessage msgBmp180Temp(CHILD_ID_BMP180_TEMP, V_TEMP);
-void readBMP180TempAndPressure(bool force);
+void readBMP180TempAndPressure(void);
 
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -106,14 +103,14 @@ OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature dallas_sensor(&oneWire);
 // Initialize temperature message
 MyMessage msgDallas(CHILD_ID_DALLAS_TEMP_BASE, V_TEMP);
-void readDS18B20(bool force);
+void readDS18B20(void);
 
 
 #include "DHT22.h"
 DHT22 dht(HUMIDITY_SENSOR_DIGITAL_PIN);
-MyMessage msgHum(CHILD_ID_DHT22_HUMIDITY, V_HUM);
-MyMessage msgTemp(CHILD_ID_DHT22_TEMP, V_TEMP);
-void readDHTHumidityAndTemperature(bool force);
+MyMessage msgDhtHum(CHILD_ID_DHT22_HUMIDITY, V_HUM);
+MyMessage msgDhtTemp(CHILD_ID_DHT22_TEMP, V_TEMP);
+void readDHTHumidityAndTemperature(void);
 
 
 /**************************************************/
@@ -152,6 +149,7 @@ void receiveTime(unsigned long ts)
 initialised.*/
 void setup()
 {
+  Serial.begin(115200);
   analogReference(INTERNAL);
   dallas_sensor.begin();
   Serial.print("Locating devices...");
@@ -182,13 +180,14 @@ void presentation()
 {
    // Send the sketch version information to the gateway and Controller
    // Send the sketch version information to the gateway and Controller
-  sendSketchInfo("ceech-temp-hum-pressure", "0.5");
+  sendSketchInfo("ceech-temp-hum-pressure", "0.6");
    // Register all sensors to gateway (they will be created as child devices)
    // Present all sensors to controller
-  present(CHILD_ID_DHT22_HUMIDITY, S_HUM);
-  present(CHILD_ID_BMP180_PRESSURE, S_BARO);
-  present(CHILD_ID_BMP180_TEMP, S_TEMP);
-  present(CHILD_ID_DALLAS_TEMP_BASE, S_TEMP);
+  present(CHILD_ID_DHT22_HUMIDITY, S_HUM,"DHT Rel Hum %");
+  present(CHILD_ID_DHT22_TEMP, S_TEMP, "DHT Temperature");
+  present(CHILD_ID_BMP180_PRESSURE, S_BARO,"BMP180 Pressure, hPa");
+  present(CHILD_ID_BMP180_TEMP, S_TEMP,"BMP180 Temperature");
+  present(CHILD_ID_DALLAS_TEMP_BASE, S_TEMP,"Freezer Temperature");
 
 
 }
@@ -197,25 +196,13 @@ void presentation()
 void loop()
 {
 
-  bool forceTransmit;
-
-  loopCount++;
-  forceTransmit = false;
-
-
-  if (loopCount > FORCE_TRANSMIT_INTERVAL)
-  { // force a transmission
-    forceTransmit = true;
-    loopCount = 0;
-  }
-
-  readDS18B20(forceTransmit);
+  readDS18B20();
   wait(1000);
 
-  readDHTHumidityAndTemperature(forceTransmit);
+  readDHTHumidityAndTemperature();
   wait(1000);
 
-  readBMP180TempAndPressure(forceTransmit);
+  readBMP180TempAndPressure();
 
   wait(SLEEP_TIME);
 
@@ -225,10 +212,10 @@ void loop()
 
 #define P_LIMIT_HI 1050.0
 #define P_LIMIT_LO 900.0
-void readBMP180TempAndPressure(bool force)
+void readBMP180TempAndPressure()
 {
-  char status;
-  double T,P;
+  uint32_t waitTime;
+  double bmpTemp,bmpPressure;
   static double lastP = 1000.0;
 
   // You must first get a temperature measurement to perform a pressure reading.
@@ -237,29 +224,29 @@ void readBMP180TempAndPressure(bool force)
   // If request is successful, the number of ms to wait is returned.
   // If request is unsuccessful, 0 is returned.
 
-  status = pressure.startTemperature();
-  if (status != 0)
+  waitTime = (uint32_t)(pressure.startTemperature());
+  if (waitTime != 0)
   {
     // Wait for the measurement to complete:
-    wait(status);
+    wait(waitTime);
 
     // Retrieve the completed temperature measurement:
     // Note that the measurement is stored in the variable T.
     // Function returns 1 if successful, 0 if failure.
 
-    status = pressure.getTemperature(T);
-    if (status != 0)
+    waitTime = (uint32_t)(pressure.getTemperature(bmpTemp));
+    if (waitTime != 0)
     {
       // Start a pressure measurement:
       // The parameter is the oversampling setting, from 0 to 3, higher numbers are slower, higher-res outputs..
       // If request is successful, the number of ms to wait is returned.
       // If request is unsuccessful, 0 is returned.
 
-      status = pressure.startPressure(3);
-      if (status != 0)
+      waitTime = (uint32_t)(pressure.startPressure(3));
+      if (waitTime != 0)
       {
         // Wait for the measurement to complete:
-        wait(status);
+        wait(waitTime);
 
         // Retrieve the completed pressure measurement:
         // Note that the measurement is stored in the variable P.
@@ -267,27 +254,27 @@ void readBMP180TempAndPressure(bool force)
         // (If temperature is stable, you can do one temperature measurement for a number of pressure measurements.)
         // Function returns 1 if successful, 0 if failure.
 
-        status = pressure.getPressure(P,T);
+        waitTime = (uint32_t)(pressure.getPressure(bmpPressure,bmpTemp));
 
         /*Filter value to get rid of the occasional erroneous large value*/
-        if(P > P_LIMIT_HI || P < P_LIMIT_LO)
+        if(bmpPressure > P_LIMIT_HI || bmpPressure < P_LIMIT_LO)
         {
-          P = lastP;
+          bmpPressure = lastP;
         }
 
-       lastP = P;
+       lastP = bmpPressure;
 
-        if (status != 0)
+        if (waitTime != 0)
         {
-          send(msgBmp180Temp.set(T,1));
-          send(msgBmp180Press.set(P,1));
+          send(msgBmp180Temp.set(bmpTemp,1));
+          send(msgBmp180Press.set(bmpPressure,1));
           #if DEBUG_RCC
           Serial.print("BMP180 Temperature:");
-          Serial.print(T, 1);
+          Serial.print(bmpTemp, 1);
           Serial.print("C");
           Serial.println();
           Serial.print("BMP180 Pressure:");
-          Serial.print(P, 1);
+          Serial.print(bmpPressure, 1);
           Serial.print("mb");
           Serial.println();
           #endif
@@ -298,62 +285,50 @@ void readBMP180TempAndPressure(bool force)
   }
 }
 
-void readDHTHumidityAndTemperature(bool force)
+void readDHTHumidityAndTemperature()
 {
-  //static float lastTemp = 0;
-  static float lastHumidity = 0;
-  DHT22_ERROR_t errorCode;
-  float humidity;
 
-  if (force)
-  {
-    //lastTemp = -100.0;
-    lastHumidity = -100.0;
-  }
+  DHT22_ERROR_t errorCode;
+  float dht_humidity, dht_temperature;
 
   errorCode = dht.readData();
   if (errorCode == DHT_ERROR_NONE)
   {
-    humidity = dht.getHumidity();
+    dht_humidity = dht.getHumidity();
+    dht_temperature = dht.getTemperatureC();
     #ifdef DEBUG_RCC
     Serial.print("Got DHT22 Data ");
     Serial.print(dht.getTemperatureC());
     Serial.print("C ");
-    Serial.print(humidity,1);
+    Serial.print(dht_humidity,1);
     Serial.println("%");
     #endif
   }
   else
   {
-    humidity = lastHumidity;
     #ifdef DEBUG_RCC
-    Serial.println("DHT read error ");
+    Serial.print("DHT read error: ");
+    Serial.print(errorCode);
+    Serial.println("");
     #endif
   }
 
-  //float temperature = dht.getTemperatureC();
-
-  if(!isnan(humidity))
+  if(!isnan(dht_humidity))
   {
-    if(lastHumidity != humidity)
-    {
-      send(msgHum.set(humidity,1));
-      lastHumidity = humidity;
-    }
+    send(msgDhtHum.set(dht_humidity,1));
+  }
+
+  if(!isnan(dht_temperature))
+  {
+    send(msgDhtTemp.set(dht_temperature,1));
   }
 
 }
 
 
-void readDS18B20(bool force)
+void readDS18B20()
 {
-  if (force)
-  {
-    for (int i=0; i<numSensors && i<MAX_ATTACHED_DS18B20; i++)
-    {
-      lastTemperature[i] = -100.0;
-    }
-  }
+  
   // Fetch temperatures from Dallas sensors
   dallas_sensor.requestTemperatures();
 
@@ -364,13 +339,15 @@ void readDS18B20(bool force)
     // Fetch and round temperature to one decimal
     float temperature = static_cast<float>(static_cast<int>((getControllerConfig().isMetric ? dallas_sensor.getTempCByIndex(i) : dallas_sensor.getTempFByIndex(i)) * 10.)) / 10.;
 
-    // Only send data if temperature has changed and no error
-    if (lastTemperature[i] != temperature && temperature != -127.00)
-    {
-
       // Send in the new temperature
-      send(msgDallas.setSensor(i).set(temperature,1));
-      lastTemperature[i]=temperature;
-    }
+    send(msgDallas.setSensor(i).set(temperature,1));
+
+    #ifdef DEBUG_RCC
+    Serial.print("Got DS18B20 Data ");
+    Serial.print(temperature);
+    Serial.print("degC ");
+    Serial.println("");
+    #endif
+    
   }
 }
